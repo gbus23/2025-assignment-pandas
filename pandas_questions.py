@@ -12,12 +12,13 @@ import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
 
+DATA_DIR = "./data/"
 
 def load_data():
     """Load data from the CSV files referundum/regions/departments."""
-    referendum = pd.DataFrame({})
-    regions = pd.DataFrame({})
-    departments = pd.DataFrame({})
+    referendum = pd.read_csv(DATA_DIR + "referendum.csv", sep=";")
+    regions = pd.read_csv(DATA_DIR + "regions.csv", sep=",")
+    departments = pd.read_csv(DATA_DIR + "departments.csv", sep=",")
 
     return referendum, regions, departments
 
@@ -28,8 +29,21 @@ def merge_regions_and_departments(regions, departments):
     The columns in the final DataFrame should be:
     ['code_reg', 'name_reg', 'code_dep', 'name_dep']
     """
+    reg = regions.rename(columns={"code": "code_reg", "name": "name_reg"}).copy()
+    dep = departments.rename(columns={"code": "code_dep", "name": "name_dep"}).copy()
 
-    return pd.DataFrame({})
+    if "code_reg" not in dep.columns:
+        for c in ["region_code", "reg_code", "region", "code_region"]:
+            if c in dep.columns:
+                dep = dep.rename(columns={c: "code_reg"})
+                break
+
+    reg["code_reg"] = reg["code_reg"].astype(str)
+    dep["code_reg"] = dep["code_reg"].astype(str)
+    dep["code_dep"] = dep["code_dep"].astype(str)
+
+    merged = dep.merge(reg[["code_reg", "name_reg"]], on="code_reg", how="left")
+    return merged[["code_reg", "name_reg", "code_dep", "name_dep"]]
 
 
 def merge_referendum_and_areas(referendum, regions_and_departments):
@@ -41,9 +55,24 @@ def merge_referendum_and_areas(referendum, regions_and_departments):
     DOM-TOM-COM departments are departements that are remote from metropolitan
     France, like Guadaloupe, Reunion, or Tahiti.
     """
+    ref = referendum.copy()
+    areas = regions_and_departments.copy()
 
-    return pd.DataFrame({})
+    ref["code_dep"] = ref["Department code"].astype(str).str.strip()
+    areas["code_dep"] = areas["code_dep"].astype(str).str.strip()
 
+    is_num_ref = ref["code_dep"].str.fullmatch(r"\d+")
+    ref.loc[is_num_ref, "code_dep"] = ref.loc[is_num_ref, "code_dep"].str.zfill(2)
+
+    is_num_areas = areas["code_dep"].str.fullmatch(r"\d+")
+    areas.loc[is_num_areas, "code_dep"] = areas.loc[is_num_areas, "code_dep"].str.zfill(2)
+
+    ref = ref[~ref["code_dep"].str.contains("Z", na=False)].copy()
+
+    merged = ref.merge(areas, on="code_dep", how="left")
+    merged = merged.dropna()
+
+    return merged
 
 def compute_referendum_result_by_regions(referendum_and_areas):
     """Return a table with the absolute count for each region.
@@ -51,8 +80,19 @@ def compute_referendum_result_by_regions(referendum_and_areas):
     The return DataFrame should be indexed by `code_reg` and have columns:
     ['name_reg', 'Registered', 'Abstentions', 'Null', 'Choice A', 'Choice B']
     """
+    df = referendum_and_areas.copy()
 
-    return pd.DataFrame({})
+    cols = ["Registered", "Abstentions", "Null", "Choice A", "Choice B"]
+    for c in cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    out = (
+        df.groupby(["code_reg", "name_reg"], as_index=False)[cols]
+        .sum()
+        .set_index("code_reg")
+    )
+
+    return out[["name_reg"] + cols] 
 
 
 def plot_referendum_map(referendum_result_by_regions):
@@ -64,9 +104,26 @@ def plot_referendum_map(referendum_result_by_regions):
       should display the rate of 'Choice A' over all expressed ballots.
     * Return a gpd.GeoDataFrame with a column 'ratio' containing the results.
     """
+    geo = gpd.read_file(DATA_DIR + "regions.geojson")
+    geo = geo.rename(columns={"code": "code_reg", "nom": "name_reg"})
+    geo["code_reg"] = geo["code_reg"].astype(str)
 
-    return gpd.GeoDataFrame({})
+    df = referendum_result_by_regions.reset_index()
+    df["code_reg"] = df["code_reg"].astype(str)
 
+    gdf = geo.merge(df, on="code_reg", how="left", suffixes=("_geo", "_data"))
+    
+    if "name_reg" not in gdf.columns:
+        if "name_reg_geo" in gdf.columns:
+            gdf["name_reg"] = gdf["name_reg_geo"]
+        elif "name_reg_data" in gdf.columns:
+            gdf["name_reg"] = gdf["name_reg_data"]
+
+    expressed = gdf["Choice A"] + gdf["Choice B"]
+    gdf["ratio"] = gdf["Choice A"] / expressed.replace(0, pd.NA)
+
+    gdf.plot(column="ratio", legend=True)
+    return gdf
 
 if __name__ == "__main__":
 
